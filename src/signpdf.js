@@ -1,6 +1,6 @@
 import forge from 'node-forge';
 import SignPdfError from './SignPdfError';
-import {removeTrailingNewLine} from './helpers';
+import {removeTrailingNewLine, plainAddPlaceholder} from './helpers';
 
 export {default as SignPdfError} from './SignPdfError';
 
@@ -12,7 +12,14 @@ export class SignPdf {
         this.lastSignature = null;
     }
 
-    signExternally(pdfBuffer, signatureCreator = {}) {
+    signExternally(pdfBuffer, signatureCreator = {}, additionalOptions = {}) {
+        const options = {
+            addPlaceHolder: false,
+            reason: 'I reviewed this',
+            ...additionalOptions,
+        };
+
+
         if (!(pdfBuffer instanceof Buffer)) {
             throw new SignPdfError(
                 'PDF expected as Buffer.',
@@ -20,7 +27,9 @@ export class SignPdf {
             );
         }
 
-        let {pdf, placeholderLength, byteRange} = this.getSignedBytes(pdfBuffer);
+        const pdfBufferWithPlaceHolder = options.addPlaceHolder ? plainAddPlaceholder(pdfBuffer, options.reason) : pdfBuffer;
+
+        let {pdf, placeholderLength, byteRange} = this.getSignedBytes(pdfBufferWithPlaceHolder);
 
         const raw = signatureCreator(pdf);
 
