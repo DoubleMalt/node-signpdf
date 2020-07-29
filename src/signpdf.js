@@ -12,6 +12,46 @@ export class SignPdf {
         this.lastSignature = null;
     }
 
+    signExternally(pdfBuffer, signatureCreator = {}) {
+        if (!(pdfBuffer instanceof Buffer)) {
+            throw new SignPdfError(
+                'PDF expected as Buffer.',
+                SignPdfError.TYPE_INPUT,
+            );
+        }
+
+        let {pdf, placeholderLength, byteRange} = this.getSignedBytes(pdfBuffer);
+
+        const raw = signatureCreator(pdf);
+
+        if ((raw.length * 2) > placeholderLength) {
+            throw new SignPdfError(
+                `Signature exceeds placeholder length: ${raw.length * 2} > ${placeholderLength}`,
+                SignPdfError.TYPE_INPUT,
+            );
+        }
+
+        let signature = Buffer.from(raw, 'binary').toString('hex');
+        // Store the HEXified signature. At least useful in tests.
+        this.lastSignature = signature;
+
+        // Pad the signature with zeroes so the it is the same length as the placeholder
+        signature += Buffer
+            .from(String.fromCharCode(0).repeat((placeholderLength / 2) - raw.length))
+            .toString('hex');
+
+        // Place it in the document.
+        pdf = Buffer.concat([
+            pdf.slice(0, byteRange[1]),
+            Buffer.from(`<${signature}>`),
+            pdf.slice(byteRange[1]),
+        ]);
+
+        // Magic. Done.
+        return pdf;
+
+    }
+
     sign(
         pdfBuffer,
         p12Buffer,
@@ -23,12 +63,6 @@ export class SignPdf {
             ...additionalOptions,
         };
 
-        if (!(pdfBuffer instanceof Buffer)) {
-            throw new SignPdfError(
-                'PDF expected as Buffer.',
-                SignPdfError.TYPE_INPUT,
-            );
-        }
         if (!(p12Buffer instanceof Buffer)) {
             throw new SignPdfError(
                 'p12 certificate expected as Buffer.',
@@ -36,6 +70,12 @@ export class SignPdf {
             );
         }
 
+        return this.signExternally(pdfBuffer, (pdf) => {
+            return this.getRawSignatureBytes(p12Buffer, options, pdf);
+        })
+    }
+
+    getSignedBytes(pdfBuffer) {
         let pdf = removeTrailingNewLine(pdfBuffer);
 
         // Find the ByteRange placeholder.
@@ -53,6 +93,7 @@ export class SignPdf {
                 SignPdfError.TYPE_PARSE,
             );
         }
+
 
         // Calculate the actual ByteRange that needs to replace the placeholder.
         const byteRangeEnd = byteRangePos + byteRangeString.length;
@@ -80,7 +121,10 @@ export class SignPdf {
             pdf.slice(0, byteRange[1]),
             pdf.slice(byteRange[2], byteRange[2] + byteRange[3]),
         ]);
+        return {pdf, placeholderLength, byteRange};
+    }
 
+    getRawSignatureBytes(p12Buffer, options, pdf) {
         // Convert Buffer P12 to a forge implementation.
         const forgeCert = forge.util.createBuffer(p12Buffer.toString('binary'));
         const p12Asn1 = forge.asn1.fromDer(forgeCert);
@@ -108,7 +152,7 @@ export class SignPdf {
         // Then add all the certificates (-cacerts & -clcerts)
         // Keep track of the last found client certificate.
         // This will be the public key that will be bundled in the signature.
-        let certificate;
+        let certificate = undefined;
         Object.keys(certBags).forEach((i) => {
             const {publicKey} = certBags[i].cert;
 
@@ -128,6 +172,7 @@ export class SignPdf {
                 SignPdfError.TYPE_INPUT,
             );
         }
+
 
         // Add a sha256 signer. That's what Adobe.PPKLite adbe.pkcs7.detached expects.
         p7.addSigner({
@@ -154,35 +199,7 @@ export class SignPdf {
         // Sign in detached mode.
         p7.sign({detached: true});
 
-        // Check if the PDF has a good enough placeholder to fit the signature.
-        const raw = forge.asn1.toDer(p7.toAsn1()).getBytes();
-        // placeholderLength represents the length of the HEXified symbols but we're
-        // checking the actual lengths.
-        if ((raw.length * 2) > placeholderLength) {
-            throw new SignPdfError(
-                `Signature exceeds placeholder length: ${raw.length * 2} > ${placeholderLength}`,
-                SignPdfError.TYPE_INPUT,
-            );
-        }
-
-        let signature = Buffer.from(raw, 'binary').toString('hex');
-        // Store the HEXified signature. At least useful in tests.
-        this.lastSignature = signature;
-
-        // Pad the signature with zeroes so the it is the same length as the placeholder
-        signature += Buffer
-            .from(String.fromCharCode(0).repeat((placeholderLength / 2) - raw.length))
-            .toString('hex');
-
-        // Place it in the document.
-        pdf = Buffer.concat([
-            pdf.slice(0, byteRange[1]),
-            Buffer.from(`<${signature}>`),
-            pdf.slice(byteRange[1]),
-        ]);
-
-        // Magic. Done.
-        return pdf;
+        return forge.asn1.toDer(p7.toAsn1()).getBytes();
     }
 }
 
